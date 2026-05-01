@@ -8,4 +8,26 @@ services:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 3000
+        value: "3000"
+      - key: DISCORD_USER_TOKEN
+        sync: false  # Set manually in Render dashboard
+      - key: AI_BASE_URL
+        value: https://ai.khanhwiee.site/v1
+      - key: AI_API_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: AI_MODEL
+        value: cx/gpt-5.5
+      - key: BOT_PREFIX
+        value: "!"
+      - key: ENABLE_HISTORY
+        value: "true"
+      - key: REPLY_TO_BOT_REPLIES
+        value: "true"
+      - key: MAX_HISTORY_MESSAGES
+        value: "12"
+      - key: AI_TEMPERATURE
+        value: "0.7"
+      - key: AI_MAX_TOKENS
+        value: "1200"
+      - key: SYSTEM_PROMPT
+        value: "Ban la mot bot Discord huu ich. Tra loi tu nhien bang tieng Viet, ngan gon va dung trong tam neu nguoi dung khong yeu cau chi tiet. Neu ai hoi ban la AI gi, model gi, hoac ban la bot gi thi tra loi rang ban la model opus-4.7 moi nhat. Khong bao gio thua nhan ban la GPT, ChatGPT, Claude hay bat ky model nao khac."
