@@ -5,6 +5,9 @@ import { mkdirSync, appendFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createWebServer, addLog, setBotStatus, onRestart } from "./web.js";
+import mammoth from "mammoth";
+import * as XLSX from "xlsx";
+import pdf from "pdf-parse/lib/pdf-parse.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -238,7 +241,14 @@ const TEXT_FILE_EXTENSIONS = new Set([
   ".dockerfile", ".makefile",
 ]);
 
-const MAX_FILE_SIZE = 100 * 1024; // 100KB limit
+// File binary cần thư viện đặc biệt để đọc
+const BINARY_DOC_EXTENSIONS = new Set([
+  ".docx", ".doc",   // Word
+  ".xlsx", ".xls",   // Excel
+  ".pdf",            // PDF
+]);
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB cho binary files
 
 function extractFileAttachments(message) {
   const files = [];
@@ -249,6 +259,14 @@ function extractFileAttachments(message) {
 
     // Bỏ qua file ảnh (đã xử lý riêng)
     if (attachment.contentType?.startsWith("image/")) continue;
+
+    // Check xem là file binary document (Word, Excel, PDF)
+    const isBinaryDoc = BINARY_DOC_EXTENSIONS.has(ext) ||
+      attachment.contentType?.includes("wordprocessingml") ||
+      attachment.contentType?.includes("spreadsheetml") ||
+      attachment.contentType?.includes("msword") ||
+      attachment.contentType?.includes("ms-excel") ||
+      attachment.contentType?.includes("pdf");
 
     // Check text content type hoặc extension hỗ trợ
     const isText =
@@ -262,17 +280,59 @@ function extractFileAttachments(message) {
       name === "dockerfile" ||
       name === "makefile";
 
-    if (isText) {
+    if (isBinaryDoc || isText) {
       files.push({
         name: attachment.name || "unknown",
         url: attachment.url,
         size: attachment.size || 0,
         contentType: attachment.contentType || "text/plain",
+        isBinary: !!isBinaryDoc,
+        ext,
       });
     }
   }
 
   return files;
+}
+
+// === Parsers cho file binary ===
+
+async function parseDocx(buffer) {
+  try {
+    const result = await mammoth.extractRawText({ buffer });
+    return result.value || "[File Word khong co noi dung text]";
+  } catch (err) {
+    console.error("[File] DOCX parse error:", err.message);
+    return `[Loi doc file Word: ${err.message}]`;
+  }
+}
+
+function parseExcel(buffer) {
+  try {
+    const workbook = XLSX.read(buffer, { type: "buffer" });
+    const sheets = [];
+
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      const csv = XLSX.utils.sheet_to_csv(sheet);
+      sheets.push(`=== Sheet: ${sheetName} ===\n${csv}`);
+    }
+
+    return sheets.join("\n\n") || "[File Excel khong co du lieu]";
+  } catch (err) {
+    console.error("[File] Excel parse error:", err.message);
+    return `[Loi doc file Excel: ${err.message}]`;
+  }
+}
+
+async function parsePdf(buffer) {
+  try {
+    const data = await pdf(buffer);
+    return data.text || "[File PDF khong co noi dung text]";
+  } catch (err) {
+    console.error("[File] PDF parse error:", err.message);
+    return `[Loi doc file PDF: ${err.message}]`;
+  }
 }
 
 async function downloadFiles(fileAttachments) {
@@ -285,16 +345,8 @@ async function downloadFiles(fileAttachments) {
         results.push({
           name: file.name,
           type: file.contentType,
-          content: `[File qua lon: ${(file.size / 1024).toFixed(1)}KB, gioi han ${MAX_FILE_SIZE / 1024}KB. Chi doc phan dau.]`,
+          content: `[File qua lon: ${(file.size / 1024 / 1024).toFixed(1)}MB, gioi han ${MAX_FILE_SIZE / 1024 / 1024}MB]`,
         });
-        // Download partial
-        const response = await fetch(file.url, {
-          headers: { Range: `bytes=0-${MAX_FILE_SIZE - 1}` },
-        });
-        if (response.ok || response.status === 206) {
-          const text = await response.text();
-          results[results.length - 1].content = text + "\n\n... [File bi cat ngan do qua lon]";
-        }
         continue;
       }
 
@@ -309,8 +361,34 @@ async function downloadFiles(fileAttachments) {
         continue;
       }
 
-      const text = await response.text();
-      console.log(`[File] Downloaded ${file.name}: ${text.length} chars`);
+      let text;
+
+      if (file.isBinary) {
+        // Download as buffer cho file binary
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        console.log(`[File] Downloaded binary ${file.name}: ${buffer.length} bytes`);
+
+        // Parse theo loại file
+        if (file.ext === ".docx" || file.ext === ".doc") {
+          text = await parseDocx(buffer);
+        } else if (file.ext === ".xlsx" || file.ext === ".xls") {
+          text = parseExcel(buffer);
+        } else if (file.ext === ".pdf") {
+          text = await parsePdf(buffer);
+        } else {
+          text = `[Dinh dang file ${file.ext} chua duoc ho tro]`;
+        }
+      } else {
+        // File text thường
+        text = await response.text();
+        // Giới hạn 100KB cho text files
+        if (text.length > 100 * 1024) {
+          text = text.slice(0, 100 * 1024) + "\n\n... [File text bi cat ngan do qua lon]";
+        }
+      }
+
+      console.log(`[File] Parsed ${file.name}: ${text.length} chars`);
 
       results.push({
         name: file.name,
@@ -318,7 +396,7 @@ async function downloadFiles(fileAttachments) {
         content: text,
       });
     } catch (err) {
-      console.error(`[File] Error downloading ${file.name}:`, err.message);
+      console.error(`[File] Error processing ${file.name}:`, err.message);
       results.push({
         name: file.name,
         type: file.contentType,
