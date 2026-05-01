@@ -4,7 +4,7 @@ import { search as ddgSearch } from "duck-duck-scrape";
 import { mkdirSync, appendFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createWebServer, addLog, setBotStatus } from "./web.js";
+import { createWebServer, addLog, setBotStatus, onRestart } from "./web.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -454,6 +454,13 @@ const PORT = process.env.PORT || 3000;
 const web = createWebServer();
 web.listen(PORT, () => {
   console.log(`Dashboard running at http://localhost:${PORT}`);
+});
+
+// Register restart handler — Render auto-restarts on process.exit(0)
+onRestart(() => {
+  console.log("Restart requested from dashboard. Shutting down...");
+  try { client.destroy(); } catch {}
+  setTimeout(() => process.exit(0), 300);
 });
 
 // Start bot (chỉ khi có đủ config)

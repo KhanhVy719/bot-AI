@@ -11,6 +11,11 @@ const ENV_PATH = join(ROOT, ".env");
 let botStatus = { running: false, username: null, startedAt: null, error: null };
 let logs = [];
 const MAX_LOGS = 200;
+let _restartCallback = null;
+
+export function onRestart(callback) {
+  _restartCallback = callback;
+}
 
 export function addLog(level, msg) {
   logs.push({ time: new Date().toISOString(), level, msg });
@@ -115,7 +120,21 @@ export function createWebServer() {
       }
     }
     saveEnv(updated);
-    res.json({ ok: true, message: "Config saved. Restart bot to apply changes." });
+    res.json({ ok: true, message: "Config saved. Restarting bot..." });
+  });
+
+  app.post("/api/restart", (_req, res) => {
+    res.json({ ok: true, message: "Restarting..." });
+    // Give response time to send, then restart
+    setTimeout(() => {
+      if (_restartCallback) {
+        _restartCallback();
+      } else {
+        // Fallback: exit process (Render will auto-restart)
+        console.log("Restarting process...");
+        process.exit(0);
+      }
+    }, 500);
   });
 
   app.get("/api/chat-logs", (_req, res) => {
@@ -400,8 +419,12 @@ async function saveConfig() {
       method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data)
     });
     const j = await r.json();
-    toast(j.message || 'Saved!');
-    setTimeout(loadConfig, 1000);
+    toast(j.message || 'Saved! Restarting...');
+    // Trigger actual restart
+    await fetch('/api/restart', { method: 'POST' }).catch(() => {});
+    // Page will reload after process restarts
+    setTimeout(() => { toast('Bot is restarting, page will reload...'); }, 1000);
+    setTimeout(() => { location.reload(); }, 4000);
   } catch(e) { toast('Save failed: ' + e.message, true); }
 }
 
