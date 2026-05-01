@@ -80,6 +80,21 @@ Bot hỗ trợ:
 
 Khi một tài liệu có cả chữ và ảnh, bot sẽ kết hợp cả hai để trả lời.
 
+### Web search
+
+Bot có thể search web và mở trực tiếp các trang kết quả để lấy nội dung liên quan đưa vào câu trả lời.
+
+- `SEARCH_PREFIX=!search` là lệnh search rõ ràng, ví dụ `!search lịch thi THPT 2026`.
+- `MAX_SEARCH_RESULTS=5` giới hạn số kết quả search đưa vào prompt.
+- `ENABLE_WEB_PAGE_READ=true` cho phép bot fetch nội dung các trang web.
+- `MAX_WEB_PAGES_TO_READ=3` giới hạn số trang bot mở trực tiếp mỗi lần hỏi.
+- `MAX_WEB_PAGE_BYTES=900000` giới hạn dung lượng mỗi trang khi fetch.
+- `MAX_WEB_PAGE_CHARS=6000` giới hạn độ dài trích đoạn mỗi trang.
+- `MAX_SEARCH_CONTEXT_CHARS=18000` giới hạn tổng context web đưa vào AI.
+- `WEB_PAGE_TIMEOUT_MS=10000` timeout mỗi trang.
+
+Nếu người dùng gửi sẵn URL trong câu hỏi, bot sẽ ưu tiên mở URL đó trước khi dùng các kết quả search khác.
+
 ## Gợi ý sử dụng
 
 - Gửi file kèm câu hỏi cụ thể để bot phân tích chính xác hơn.

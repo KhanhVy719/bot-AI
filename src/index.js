@@ -26,7 +26,13 @@ const config = {
   aiModel: process.env.AI_MODEL || "cx/gpt-5.5",
   botPrefix: process.env.BOT_PREFIX || "!",
   searchPrefix: process.env.SEARCH_PREFIX || "!search",
-  maxSearchResults: Number(process.env.MAX_SEARCH_RESULTS || 5),
+  maxSearchResults: readPositiveIntegerEnv("MAX_SEARCH_RESULTS", 5),
+  enableWebPageRead: parseBoolean(process.env.ENABLE_WEB_PAGE_READ, true),
+  maxWebPagesToRead: readPositiveIntegerEnv("MAX_WEB_PAGES_TO_READ", 3),
+  maxWebPageBytes: readPositiveIntegerEnv("MAX_WEB_PAGE_BYTES", 900_000),
+  maxWebPageChars: readPositiveIntegerEnv("MAX_WEB_PAGE_CHARS", 6000),
+  maxSearchContextChars: readPositiveIntegerEnv("MAX_SEARCH_CONTEXT_CHARS", 18000),
+  webPageTimeoutMs: readPositiveIntegerEnv("WEB_PAGE_TIMEOUT_MS", 10_000),
   chatLogsDir: process.env.CHAT_LOGS_DIR || join(__dirname, "..", "chat_logs"),
   memoryBackend: (process.env.MEMORY_BACKEND || "file").trim().toLowerCase(),
   memoryDir: process.env.MEMORY_DIR || join(__dirname, "..", "memory"),
@@ -179,7 +185,7 @@ client.on("messageCreate", async (message) => {
     }
 
     if (searchContext) {
-      finalPrompt = `${finalPrompt}\n\nKet qua tim kiem tu web:\n${searchContext}\n\nHay tra loi dua tren ket qua tim kiem phia tren. Trich dan nguon neu can.`;
+      finalPrompt = `${finalPrompt}\n\nKet qua tim kiem va noi dung trang web da mo:\n${searchContext}\n\nHay tra loi dua tren noi dung web phia tren, uu tien cac phan \"Noi dung lien quan\" cua tung nguon. Trich dan ten nguon/link neu can.`;
     }
 
     const memoryContext = await memoryStore.getPrompt(conversationKey);
@@ -863,43 +869,82 @@ function extractSearchQuery(text) {
   return null;
 }
 
+const SEARCH_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const WEB_PAGE_TEXT_TYPES = [
+  "text/html",
+  "application/xhtml+xml",
+  "text/plain",
+  "application/json",
+  "application/ld+json",
+];
+const WEB_PAGE_SKIP_EXTENSIONS = new Set([
+  ".7z", ".avi", ".bmp", ".doc", ".docx", ".exe", ".gif", ".gz", ".heic", ".heif",
+  ".ico", ".jpeg", ".jpg", ".m4a", ".mov", ".mp3", ".mp4", ".mpeg", ".pdf", ".png",
+  ".ppt", ".pptx", ".rar", ".svg", ".tar", ".webm", ".webp", ".xls", ".xlsx", ".zip",
+]);
+const WEB_SEARCH_STOP_WORDS = new Set([
+  "anh", "ban", "cho", "co", "cua", "dang", "de", "di", "duoc", "gi", "hay",
+  "hoi", "khong", "la", "lay", "minh", "nay", "neu", "noi", "search", "tim",
+  "toi", "tra", "trang", "truc", "vao", "ve", "voi", "xem",
+]);
+
 async function searchWeb(query) {
   console.log(`[Search] Searching: "${query}"`);
 
+  let searchResults = [];
   try {
     const results = await ddgSearch(query, { safeSearch: 0 });
 
     if (!results?.results?.length) {
       console.log("[Search] No results from ddgSearch, trying fallback...");
-      return await searchWebFallback(query);
+      searchResults = await searchWebFallbackResults(query);
+    } else {
+      searchResults = results.results.map((result) => ({
+        title: result.title || "",
+        description: result.description || "",
+        url: normalizeWebUrl(result.url),
+      }));
     }
-
-    const topResults = results.results.slice(0, config.maxSearchResults);
-    const formatted = topResults
-      .map((r, i) => `${i + 1}. ${r.title}\n   ${r.description || ""}\n   Link: ${r.url}`)
-      .join("\n\n");
-
-    console.log(`[Search] Got ${topResults.length} results`);
-    return formatted;
   } catch (err) {
     console.error("[Search] ddgSearch failed:", err.message);
-    return await searchWebFallback(query);
+    searchResults = await searchWebFallbackResults(query);
   }
+
+  const directUrlResults = extractHttpUrls(query).map((url) => ({
+    title: "URL nguoi dung gui",
+    description: "Trang duoc nhac truc tiep trong cau hoi.",
+    url,
+  }));
+  const topResults = dedupeSearchResults([...directUrlResults, ...searchResults])
+    .slice(0, config.maxSearchResults);
+
+  if (!topResults.length) {
+    console.log("[Search] No results available");
+    return "";
+  }
+
+  const pageReads = config.enableWebPageRead
+    ? await readSearchResultPages(topResults, query)
+    : [];
+
+  console.log(
+    `[Search] Got ${topResults.length} result(s), read ${pageReads.length} page(s)`,
+  );
+  return limitText(formatSearchContext(topResults, pageReads), config.maxSearchContextChars);
 }
 
-async function searchWebFallback(query) {
+async function searchWebFallbackResults(query) {
   try {
     console.log("[Search] Using fallback HTML scrape...");
     const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
     const response = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      },
+      headers: { "User-Agent": SEARCH_USER_AGENT },
     });
 
     if (!response.ok) {
       console.log(`[Search] Fallback HTTP ${response.status}`);
-      return "";
+      return [];
     }
 
     const html = await response.text();
@@ -910,29 +955,414 @@ async function searchWebFallback(query) {
     let match;
 
     while ((match = regex.exec(html)) !== null && results.length < config.maxSearchResults) {
-      const link = decodeURIComponent(match[1].replace(/.*uddg=/, "").replace(/&.*/, ""));
-      const title = match[2].replace(/<[^>]+>/g, "").trim();
-      const snippet = match[3].replace(/<[^>]+>/g, "").trim();
+      const link = normalizeWebUrl(match[1]);
+      const title = stripHtml(match[2]);
+      const snippet = stripHtml(match[3]);
       if (title && link) {
-        results.push({ title, snippet, link });
+        results.push({ title, description: snippet, url: link });
       }
     }
 
     if (!results.length) {
       console.log("[Search] Fallback: no results parsed");
-      return "";
+      return [];
     }
 
-    const formatted = results
-      .map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet}\n   Link: ${r.link}`)
-      .join("\n\n");
-
     console.log(`[Search] Fallback got ${results.length} results`);
-    return formatted;
+    return results;
   } catch (err) {
     console.error("[Search] Fallback failed:", err.message);
+    return [];
+  }
+}
+
+async function readSearchResultPages(results, query) {
+  const readableResults = results
+    .filter((result) => isReadableWebUrl(result.url))
+    .slice(0, config.maxWebPagesToRead);
+
+  if (!readableResults.length) return [];
+
+  const settled = await Promise.allSettled(
+    readableResults.map((result, index) => readWebPage(result, query, index + 1)),
+  );
+
+  return settled
+    .map((item) => (item.status === "fulfilled" ? item.value : null))
+    .filter(Boolean);
+}
+
+async function readWebPage(result, query, sourceNumber) {
+  const url = normalizeWebUrl(result.url);
+  if (!url) return null;
+  if (!isReadableWebUrl(url)) return null;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.webPageTimeoutMs);
+
+  try {
+    const { response, finalUrl } = await fetchReadableWebPage(url, controller.signal);
+
+    if (!response.ok) {
+      console.log(`[Search] Page ${sourceNumber} HTTP ${response.status}: ${finalUrl}`);
+      return null;
+    }
+
+    const contentType = (response.headers.get("content-type") || "").toLowerCase();
+    if (!isReadableContentType(contentType)) {
+      console.log(`[Search] Page ${sourceNumber} skipped content-type ${contentType}: ${finalUrl}`);
+      return null;
+    }
+
+    const raw = await readLimitedResponseText(response, config.maxWebPageBytes);
+    const pageTitle = extractHtmlTitle(raw) || result.title || url;
+    const text = contentType.includes("html") || /<\s*html[\s>]/i.test(raw)
+      ? htmlToReadableText(raw)
+      : cleanReadableText(raw);
+    const excerpt = buildRelevantWebExcerpt(text, query, config.maxWebPageChars);
+
+    if (!excerpt) return null;
+
+    return {
+      sourceNumber,
+      title: pageTitle,
+      url: finalUrl,
+      excerpt,
+    };
+  } catch (err) {
+    const reason = err.name === "AbortError" ? "timeout" : err.message;
+    console.log(`[Search] Page ${sourceNumber} read failed (${reason}): ${url}`);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchReadableWebPage(url, signal) {
+  let currentUrl = url;
+
+  for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
+    if (!isReadableWebUrl(currentUrl)) {
+      throw new Error("blocked url");
+    }
+
+    const response = await fetch(currentUrl, {
+      signal,
+      redirect: "manual",
+      headers: {
+        "Accept": "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.5",
+        "User-Agent": SEARCH_USER_AGENT,
+      },
+    });
+
+    if (![301, 302, 303, 307, 308].includes(response.status)) {
+      return { response, finalUrl: currentUrl };
+    }
+
+    const location = response.headers.get("location");
+    if (!location) {
+      return { response, finalUrl: currentUrl };
+    }
+
+    currentUrl = normalizeWebUrl(new URL(location, currentUrl).toString());
+  }
+
+  throw new Error("too many redirects");
+}
+
+function formatSearchContext(results, pageReads) {
+  const searchLines = results
+    .map((result, index) => {
+      const description = result.description ? `\n   Tom tat: ${result.description}` : "";
+      return `${index + 1}. ${result.title || result.url}${description}\n   Link: ${result.url}`;
+    })
+    .join("\n\n");
+
+  const sections = [
+    "Ket qua search:",
+    searchLines,
+  ];
+
+  if (pageReads.length) {
+    sections.push(
+      "Noi dung cac trang da mo truc tiep:",
+      pageReads
+        .map((page) => [
+          `[Nguon ${page.sourceNumber}] ${page.title}`,
+          `URL: ${page.url}`,
+          "Noi dung lien quan:",
+          page.excerpt,
+        ].join("\n"))
+        .join("\n\n"),
+    );
+  } else if (config.enableWebPageRead) {
+    sections.push("Khong doc duoc noi dung trang truc tiep; chi co title/snippet/link search.");
+  }
+
+  return sections.join("\n\n");
+}
+
+function extractHttpUrls(text) {
+  const urls = [];
+  const regex = /https?:\/\/[^\s<>"')\]]+/gi;
+  let match;
+
+  while ((match = regex.exec(String(text || ""))) !== null) {
+    const url = normalizeWebUrl(match[0].replace(/[.,;:!?]+$/g, ""));
+    if (url) urls.push(url);
+  }
+
+  return urls;
+}
+
+function dedupeSearchResults(results) {
+  const seen = new Set();
+  const unique = [];
+
+  for (const result of results) {
+    const url = normalizeWebUrl(result.url);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    unique.push({
+      title: cleanReadableText(result.title || url).slice(0, 180),
+      description: cleanReadableText(result.description || "").slice(0, 500),
+      url,
+    });
+  }
+
+  return unique;
+}
+
+function normalizeWebUrl(value) {
+  let raw = decodeHtmlEntities(String(value || "").trim());
+  if (!raw) return "";
+  if (raw.startsWith("//")) raw = `https:${raw}`;
+
+  try {
+    const parsed = new URL(raw);
+    const redirected = parsed.searchParams.get("uddg");
+    const host = parsed.hostname.toLowerCase();
+    if ((host === "duckduckgo.com" || host.endsWith(".duckduckgo.com")) && redirected) {
+      return normalizeWebUrl(redirected);
+    }
+
+    if (!["http:", "https:"].includes(parsed.protocol)) return "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
     return "";
   }
+}
+
+function isReadableWebUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (isBlockedWebHost(parsed.hostname)) return false;
+    const pathname = parsed.pathname.toLowerCase();
+    return ![...WEB_PAGE_SKIP_EXTENSIONS].some((ext) => pathname.endsWith(ext));
+  } catch {
+    return false;
+  }
+}
+
+function isBlockedWebHost(hostname) {
+  const host = String(hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host) return true;
+  if (
+    host === "localhost" ||
+    host === "0.0.0.0" ||
+    host.endsWith(".local") ||
+    host.endsWith(".localhost")
+  ) {
+    return true;
+  }
+
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const parts = ipv4.slice(1).map(Number);
+    if (parts.some((part) => part < 0 || part > 255)) return true;
+    const [a, b] = parts;
+    return (
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168)
+    );
+  }
+
+  return host === "::1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80");
+}
+
+function isReadableContentType(contentType) {
+  if (!contentType) return true;
+  return WEB_PAGE_TEXT_TYPES.some((type) => contentType.includes(type));
+}
+
+async function readLimitedResponseText(response, maxBytes) {
+  if (!response.body?.getReader) {
+    return limitText(await response.text(), maxBytes);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let totalBytes = 0;
+  let text = "";
+
+  while (totalBytes < maxBytes) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const remaining = maxBytes - totalBytes;
+    const chunk = value.byteLength > remaining ? value.slice(0, remaining) : value;
+    totalBytes += chunk.byteLength;
+    const reachedLimit = totalBytes >= maxBytes;
+    text += decoder.decode(chunk, { stream: !reachedLimit });
+
+    if (reachedLimit) {
+      await reader.cancel().catch(() => {});
+      break;
+    }
+  }
+
+  text += decoder.decode();
+  return text;
+}
+
+function htmlToReadableText(html) {
+  const withoutNoise = String(html || "")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(script|style|noscript|svg|canvas|iframe|form|select|template)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|section|article|main|header|footer|nav|aside|li|tr|td|th|h[1-6])>/gi, "\n")
+    .replace(/<(p|div|section|article|main|header|footer|nav|aside|li|tr|td|th|h[1-6])[^>]*>/gi, "\n")
+    .replace(/<[^>]+>/g, " ");
+
+  return cleanReadableText(decodeHtmlEntities(withoutNoise));
+}
+
+function extractHtmlTitle(html) {
+  const match = String(html || "").match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return match ? cleanReadableText(decodeHtmlEntities(match[1])).slice(0, 180) : "";
+}
+
+function stripHtml(value) {
+  return cleanReadableText(decodeHtmlEntities(String(value || "").replace(/<[^>]+>/g, " ")));
+}
+
+function cleanReadableText(value) {
+  const lines = String(value || "")
+    .replace(/\r/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n[ \t]+/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const deduped = [];
+  let previous = "";
+  for (const line of lines) {
+    if (line === previous) continue;
+    deduped.push(line);
+    previous = line;
+  }
+
+  return deduped.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function buildRelevantWebExcerpt(text, query, maxChars) {
+  const cleaned = cleanReadableText(text);
+  if (!cleaned || cleaned.length <= maxChars) return cleaned;
+
+  const terms = extractSearchTerms(query);
+  const normalizedText = normalizeSearchText(cleaned);
+  const windows = [];
+  const radius = Math.max(700, Math.floor(maxChars / 5));
+
+  for (const term of terms.slice(0, 12)) {
+    let index = normalizedText.indexOf(term);
+    let hits = 0;
+
+    while (index !== -1 && hits < 3 && windows.length < 14) {
+      windows.push({
+        start: Math.max(0, index - radius),
+        end: Math.min(cleaned.length, index + term.length + radius),
+      });
+      hits += 1;
+      index = normalizedText.indexOf(term, index + term.length);
+    }
+  }
+
+  if (!windows.length) {
+    return limitText(cleaned, maxChars);
+  }
+
+  const merged = mergeTextWindows(windows);
+  let excerpt = "";
+
+  for (const window of merged) {
+    const chunk = cleaned.slice(window.start, window.end).trim();
+    if (!chunk) continue;
+    const next = excerpt ? `${excerpt}\n...\n${chunk}` : chunk;
+    if (next.length > maxChars) break;
+    excerpt = next;
+  }
+
+  return limitText(excerpt || cleaned, maxChars);
+}
+
+function extractSearchTerms(query) {
+  return normalizeSearchText(query)
+    .replace(/https?:\/\/\S+/g, " ")
+    .split(/[^a-z0-9]+/i)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 3 && !WEB_SEARCH_STOP_WORDS.has(term));
+}
+
+function mergeTextWindows(windows) {
+  const sorted = windows
+    .filter((window) => window.end > window.start)
+    .sort((a, b) => a.start - b.start);
+  const merged = [];
+
+  for (const window of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && window.start <= last.end + 200) {
+      last.end = Math.max(last.end, window.end);
+    } else {
+      merged.push({ ...window });
+    }
+  }
+
+  return merged;
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replace(/&#(\d+);/g, (match, code) => decodeHtmlCodePoint(Number(code), match))
+    .replace(/&#x([0-9a-f]+);/gi, (match, code) => decodeHtmlCodePoint(parseInt(code, 16), match))
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+function decodeHtmlCodePoint(code, fallback) {
+  try {
+    return Number.isInteger(code) && code > 0 ? String.fromCodePoint(code) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function limitText(text, maxChars) {
+  const value = String(text || "");
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, Math.max(0, maxChars - 20)).trim()}\n[da cat bot noi dung]`;
 }
 
 async function isReplyToThisBot(message) {

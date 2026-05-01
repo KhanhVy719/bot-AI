@@ -55,6 +55,14 @@ function saveEnv(data) {
     `ENABLE_HISTORY=${data.ENABLE_HISTORY || "true"}`,
     `ENABLE_CHAT_LOGS=${data.ENABLE_CHAT_LOGS || "true"}`,
     `REPLY_TO_BOT_REPLIES=${data.REPLY_TO_BOT_REPLIES || "true"}`,
+    `SEARCH_PREFIX=${data.SEARCH_PREFIX || "!search"}`,
+    `MAX_SEARCH_RESULTS=${data.MAX_SEARCH_RESULTS || "5"}`,
+    `ENABLE_WEB_PAGE_READ=${data.ENABLE_WEB_PAGE_READ || "true"}`,
+    `MAX_WEB_PAGES_TO_READ=${data.MAX_WEB_PAGES_TO_READ || "3"}`,
+    `MAX_WEB_PAGE_BYTES=${data.MAX_WEB_PAGE_BYTES || "900000"}`,
+    `MAX_WEB_PAGE_CHARS=${data.MAX_WEB_PAGE_CHARS || "6000"}`,
+    `MAX_SEARCH_CONTEXT_CHARS=${data.MAX_SEARCH_CONTEXT_CHARS || "18000"}`,
+    `WEB_PAGE_TIMEOUT_MS=${data.WEB_PAGE_TIMEOUT_MS || "10000"}`,
     `ENABLE_MEMORY=${data.ENABLE_MEMORY || "true"}`,
     `MEMORY_BACKEND=${data.MEMORY_BACKEND || "file"}`,
     `MEMORY_UPDATE_EVERY=${data.MEMORY_UPDATE_EVERY || "4"}`,
@@ -120,6 +128,14 @@ export function createWebServer() {
       ENABLE_HISTORY: env.ENABLE_HISTORY || "true",
       ENABLE_CHAT_LOGS: env.ENABLE_CHAT_LOGS || "true",
       REPLY_TO_BOT_REPLIES: env.REPLY_TO_BOT_REPLIES || "true",
+      SEARCH_PREFIX: env.SEARCH_PREFIX || "!search",
+      MAX_SEARCH_RESULTS: env.MAX_SEARCH_RESULTS || "5",
+      ENABLE_WEB_PAGE_READ: env.ENABLE_WEB_PAGE_READ || "true",
+      MAX_WEB_PAGES_TO_READ: env.MAX_WEB_PAGES_TO_READ || "3",
+      MAX_WEB_PAGE_BYTES: env.MAX_WEB_PAGE_BYTES || "900000",
+      MAX_WEB_PAGE_CHARS: env.MAX_WEB_PAGE_CHARS || "6000",
+      MAX_SEARCH_CONTEXT_CHARS: env.MAX_SEARCH_CONTEXT_CHARS || "18000",
+      WEB_PAGE_TIMEOUT_MS: env.WEB_PAGE_TIMEOUT_MS || "10000",
       ENABLE_MEMORY: env.ENABLE_MEMORY || "true",
       MEMORY_BACKEND: env.MEMORY_BACKEND || "file",
       MEMORY_UPDATE_EVERY: env.MEMORY_UPDATE_EVERY || "4",
@@ -334,6 +350,44 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
       </div>
       <div class="form-row">
         <div class="form-group">
+          <label>Search Prefix</label>
+          <input type="text" id="cfg-SEARCH_PREFIX" placeholder="!search">
+        </div>
+        <div class="form-group">
+          <label>Max Search Results</label>
+          <input type="number" id="cfg-MAX_SEARCH_RESULTS" min="1" placeholder="5">
+        </div>
+        <div class="form-group">
+          <label>Enable Web Page Read</label>
+          <select id="cfg-ENABLE_WEB_PAGE_READ"><option value="true">Yes</option><option value="false">No</option></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Max Web Pages To Read</label>
+          <input type="number" id="cfg-MAX_WEB_PAGES_TO_READ" min="1" placeholder="3">
+        </div>
+        <div class="form-group">
+          <label>Max Web Page Bytes</label>
+          <input type="number" id="cfg-MAX_WEB_PAGE_BYTES" min="100000" placeholder="900000">
+        </div>
+        <div class="form-group">
+          <label>Max Web Page Chars</label>
+          <input type="number" id="cfg-MAX_WEB_PAGE_CHARS" min="500" placeholder="6000">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Max Search Context Chars</label>
+          <input type="number" id="cfg-MAX_SEARCH_CONTEXT_CHARS" min="1000" placeholder="18000">
+        </div>
+        <div class="form-group">
+          <label>Web Page Timeout MS</label>
+          <input type="number" id="cfg-WEB_PAGE_TIMEOUT_MS" min="1000" placeholder="10000">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
           <label>Temperature</label>
           <input type="number" id="cfg-AI_TEMPERATURE" step="0.1" min="0" max="2" placeholder="0.7">
         </div>
@@ -491,6 +545,8 @@ async function loadConfig() {
 async function saveConfig() {
   const fields = ['DISCORD_USER_TOKEN','AI_API_KEY','AI_BASE_URL','AI_MODEL','BOT_PREFIX',
     'MAX_HISTORY_MESSAGES','AI_TEMPERATURE','AI_MAX_TOKENS','ENABLE_HISTORY','ENABLE_CHAT_LOGS',
+    'SEARCH_PREFIX','MAX_SEARCH_RESULTS','ENABLE_WEB_PAGE_READ','MAX_WEB_PAGES_TO_READ','MAX_WEB_PAGE_BYTES',
+    'MAX_WEB_PAGE_CHARS','MAX_SEARCH_CONTEXT_CHARS','WEB_PAGE_TIMEOUT_MS',
     'ENABLE_MEMORY','MEMORY_BACKEND','MEMORY_UPDATE_EVERY','MEMORY_RECENT_EXCHANGES','MAX_MEMORY_CHARS',
     'SUPABASE_URL','SUPABASE_SERVICE_ROLE_KEY','SUPABASE_DB_URL','SUPABASE_MEMORY_TABLE','POSTGRES_SSL','SYSTEM_PROMPT'];
   const data = {};
