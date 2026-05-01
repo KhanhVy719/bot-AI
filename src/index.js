@@ -68,6 +68,8 @@ client.on("messageCreate", async (message) => {
 
   const imageUrls = extractImageUrls(message);
   const hasImages = imageUrls.length > 0;
+  const fileAttachments = extractFileAttachments(message);
+  const hasFiles = fileAttachments.length > 0;
 
   const conversationKey = getConversationKey(message);
 
@@ -77,7 +79,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  if (!prompt.trim() && !hasImages) {
+  if (!prompt.trim() && !hasImages && !hasFiles) {
     await message.reply(
       message.guild
         ? `Gui cau hoi bang mention, prefix \`${config.botPrefix}\`, hoac reply vao tin nhan cua bot.`
@@ -112,10 +114,29 @@ client.on("messageCreate", async (message) => {
 
     const history = config.enableHistory ? histories.get(conversationKey) || [] : [];
 
+    // Download và đọc nội dung file đính kèm
+    let fileContext = "";
+    if (hasFiles) {
+      const fileContents = await downloadFiles(fileAttachments);
+      if (fileContents.length > 0) {
+        fileContext = fileContents
+          .map((f) => `--- File: ${f.name} (${f.type}) ---\n${f.content}`)
+          .join("\n\n");
+        console.log(`[File] Read ${fileContents.length} file(s), total ${fileContext.length} chars`);
+      }
+    }
+
     // Nếu có search results, inject vào prompt
     let finalPrompt = prompt.trim();
+
+    // Inject file content vào prompt
+    if (fileContext) {
+      const userQuestion = finalPrompt || "Hay phan tich va giai thich noi dung file nay.";
+      finalPrompt = `Nguoi dung gui ${fileAttachments.length} file dinh kem va hoi: "${userQuestion}"\n\nNoi dung cac file:\n${fileContext}\n\nHay phan tich, giai thich, hoac tra loi dua tren noi dung file phia tren.`;
+    }
+
     if (searchContext) {
-      finalPrompt = `Nguoi dung hoi: "${finalPrompt}"\n\nKet qua tim kiem tu web:\n${searchContext}\n\nHay tra loi dua tren ket qua tim kiem phia tren. Trich dan nguon neu can.`;
+      finalPrompt = `${finalPrompt}\n\nKet qua tim kiem tu web:\n${searchContext}\n\nHay tra loi dua tren ket qua tim kiem phia tren. Trich dan nguon neu can.`;
     }
 
     const userMessage = buildUserMessage(finalPrompt, imageUrls);
@@ -196,6 +217,117 @@ function extractImageUrls(message) {
   }
 
   return urls;
+}
+
+// ===== FILE ANALYSIS =====
+
+// Các extension file text mà bot hỗ trợ đọc
+const TEXT_FILE_EXTENSIONS = new Set([
+  // Code
+  ".js", ".ts", ".jsx", ".tsx", ".py", ".java", ".c", ".cpp", ".h", ".hpp",
+  ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".scala", ".lua",
+  ".r", ".m", ".sql", ".sh", ".bash", ".bat", ".ps1", ".cmd",
+  // Web
+  ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte",
+  // Data
+  ".json", ".xml", ".yaml", ".yml", ".csv", ".tsv", ".toml", ".ini", ".cfg",
+  // Doc
+  ".txt", ".md", ".markdown", ".rst", ".tex", ".log", ".env",
+  // Config
+  ".gitignore", ".dockerignore", ".editorconfig", ".eslintrc", ".prettierrc",
+  ".dockerfile", ".makefile",
+]);
+
+const MAX_FILE_SIZE = 100 * 1024; // 100KB limit
+
+function extractFileAttachments(message) {
+  const files = [];
+
+  for (const attachment of message.attachments.values()) {
+    const name = (attachment.name || "").toLowerCase();
+    const ext = name.includes(".") ? "." + name.split(".").pop() : "";
+
+    // Bỏ qua file ảnh (đã xử lý riêng)
+    if (attachment.contentType?.startsWith("image/")) continue;
+
+    // Check text content type hoặc extension hỗ trợ
+    const isText =
+      attachment.contentType?.startsWith("text/") ||
+      attachment.contentType?.includes("json") ||
+      attachment.contentType?.includes("xml") ||
+      attachment.contentType?.includes("javascript") ||
+      attachment.contentType?.includes("csv") ||
+      attachment.contentType?.includes("yaml") ||
+      TEXT_FILE_EXTENSIONS.has(ext) ||
+      name === "dockerfile" ||
+      name === "makefile";
+
+    if (isText) {
+      files.push({
+        name: attachment.name || "unknown",
+        url: attachment.url,
+        size: attachment.size || 0,
+        contentType: attachment.contentType || "text/plain",
+      });
+    }
+  }
+
+  return files;
+}
+
+async function downloadFiles(fileAttachments) {
+  const results = [];
+
+  for (const file of fileAttachments) {
+    try {
+      // Check size limit
+      if (file.size > MAX_FILE_SIZE) {
+        results.push({
+          name: file.name,
+          type: file.contentType,
+          content: `[File qua lon: ${(file.size / 1024).toFixed(1)}KB, gioi han ${MAX_FILE_SIZE / 1024}KB. Chi doc phan dau.]`,
+        });
+        // Download partial
+        const response = await fetch(file.url, {
+          headers: { Range: `bytes=0-${MAX_FILE_SIZE - 1}` },
+        });
+        if (response.ok || response.status === 206) {
+          const text = await response.text();
+          results[results.length - 1].content = text + "\n\n... [File bi cat ngan do qua lon]";
+        }
+        continue;
+      }
+
+      const response = await fetch(file.url);
+      if (!response.ok) {
+        console.error(`[File] Failed to download ${file.name}: HTTP ${response.status}`);
+        results.push({
+          name: file.name,
+          type: file.contentType,
+          content: `[Khong tai duoc file: HTTP ${response.status}]`,
+        });
+        continue;
+      }
+
+      const text = await response.text();
+      console.log(`[File] Downloaded ${file.name}: ${text.length} chars`);
+
+      results.push({
+        name: file.name,
+        type: file.contentType,
+        content: text,
+      });
+    } catch (err) {
+      console.error(`[File] Error downloading ${file.name}:`, err.message);
+      results.push({
+        name: file.name,
+        type: file.contentType,
+        content: `[Loi khi doc file: ${err.message}]`,
+      });
+    }
+  }
+
+  return results;
 }
 
 function buildUserMessage(text, imageUrls) {
