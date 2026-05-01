@@ -11,6 +11,7 @@
     "node": ">=22.3.0"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.105.1",
     "debug": "^4.4.3",
     "discord.js-selfbot-v13": "^3.4.4",
     "dotenv": "^17.4.2",
@@ -19,6 +20,7 @@
     "jszip": "^3.10.1",
     "mammoth": "^1.12.0",
     "pdf-parse": "^2.4.5",
+    "pg": "^8.20.0",
     "xlsx": "^0.18.5"
   }
 }

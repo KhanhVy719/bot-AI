@@ -93,3 +93,25 @@ Có thể kiểm tra cú pháp file chính bằng lệnh:
 ```bash
 node --check src/index.js
 ```
+
+## Memory
+
+Bot co module memory dai han rieng trong `src/memory.js`.
+
+- `ENABLE_MEMORY=true` bat tinh nang ghi nho.
+- `MEMORY_BACKEND=file` luu memory vao thu muc local; doi thanh `postgres` de luu truc tiep vao Supabase Postgres bang connection string.
+- `MEMORY_BACKEND=supabase` van duoc ho tro neu ban muon dung Supabase REST voi service role key.
+- `MEMORY_UPDATE_EVERY=4` quy dinh cu moi 4 luot hoi/dap thi bot nen memory bang AI.
+- `MEMORY_RECENT_EXCHANGES=8` la so luot gan day duoc dung de cap nhat memory.
+- `MAX_MEMORY_CHARS=1600` gioi han do dai memory dua vao prompt.
+- `MEMORY_DIR=memory` la thu muc luu file memory JSON.
+- `SUPABASE_DB_URL` hoac `DATABASE_URL` dung khi `MEMORY_BACKEND=postgres`.
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_MEMORY_TABLE=bot_memory` dung khi `MEMORY_BACKEND=supabase`.
+
+Lenh `reset` se xoa ca lich su hoi thoai ngan han va memory cua cuoc tro chuyen hien tai.
+
+De dung Supabase Postgres tren Render, set `MEMORY_BACKEND=postgres` va `SUPABASE_DB_URL` bang connection string trong Environment. Khong dua DB password len GitHub hay client. Bot se tu tao bang neu chua co; neu muon tao thu cong thi chay SQL trong `supabase/migrations/001_bot_memory.sql` tren Supabase SQL Editor.
+
+Neu password co ky tu dac biet trong connection string, can URL-encode truoc khi dan vao `SUPABASE_DB_URL`, vi du `@` thanh `%40`.
+
+Luu y khi deploy Render: neu dung `MEMORY_BACKEND=file` ma khong gan persistent disk, thu muc `memory/` co the mat khi service restart/deploy lai. Dung Supabase se ben vung hon.

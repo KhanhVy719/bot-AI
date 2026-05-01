@@ -25,6 +25,28 @@ services:
         value: "true"
       - key: ENABLE_CHAT_LOGS
         value: "true"
+      - key: ENABLE_MEMORY
+        value: "true"
+      - key: MEMORY_BACKEND
+        value: postgres
+      - key: MEMORY_UPDATE_EVERY
+        value: "4"
+      - key: MEMORY_RECENT_EXCHANGES
+        value: "8"
+      - key: MAX_MEMORY_CHARS
+        value: "1600"
+      - key: MEMORY_DIR
+        value: memory
+      - key: SUPABASE_URL
+        sync: false  # Set manually in Render dashboard
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: SUPABASE_DB_URL
+        sync: false  # Set manually in Render dashboard
+      - key: SUPABASE_MEMORY_TABLE
+        value: bot_memory
+      - key: POSTGRES_SSL
+        value: "true"
       - key: REPLY_TO_BOT_REPLIES
         value: "true"
       - key: MAX_HISTORY_MESSAGES

@@ -5,6 +5,7 @@ import { mkdirSync, appendFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createWebServer, addLog, setBotStatus, onRestart } from "./web.js";
+import { createMemoryStore } from "./memory.js";
 import mammoth from "mammoth";
 import JSZip from "jszip";
 import * as XLSX from "xlsx";
@@ -27,8 +28,19 @@ const config = {
   searchPrefix: process.env.SEARCH_PREFIX || "!search",
   maxSearchResults: Number(process.env.MAX_SEARCH_RESULTS || 5),
   chatLogsDir: process.env.CHAT_LOGS_DIR || join(__dirname, "..", "chat_logs"),
+  memoryBackend: (process.env.MEMORY_BACKEND || "file").trim().toLowerCase(),
+  memoryDir: process.env.MEMORY_DIR || join(__dirname, "..", "memory"),
+  supabaseUrl: process.env.SUPABASE_URL || "",
+  supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || "",
+  supabaseMemoryTable: process.env.SUPABASE_MEMORY_TABLE || "bot_memory",
+  supabaseDbUrl: process.env.SUPABASE_DB_URL || process.env.DATABASE_URL || "",
+  postgresSsl: parseBoolean(process.env.POSTGRES_SSL, true),
   enableChatLogs: parseBoolean(process.env.ENABLE_CHAT_LOGS, true),
   enableHistory: parseBoolean(process.env.ENABLE_HISTORY, true),
+  enableMemory: parseBoolean(process.env.ENABLE_MEMORY, true),
+  memoryUpdateEvery: readPositiveIntegerEnv("MEMORY_UPDATE_EVERY", 4),
+  memoryRecentExchanges: readPositiveIntegerEnv("MEMORY_RECENT_EXCHANGES", 8),
+  maxMemoryChars: readPositiveIntegerEnv("MAX_MEMORY_CHARS", 1600),
   replyToBotReplies: parseBoolean(process.env.REPLY_TO_BOT_REPLIES, true),
   maxHistoryMessages: Number(process.env.MAX_HISTORY_MESSAGES || 12),
   temperature: Number(process.env.AI_TEMPERATURE || 0.7),
@@ -57,6 +69,20 @@ const client = new Client({
 
 const histories = new Map();
 const activeConversations = new Set();
+const memoryStore = createMemoryStore({
+  backend: config.memoryBackend,
+  dir: config.memoryDir,
+  enabled: config.enableMemory,
+  supabaseUrl: config.supabaseUrl,
+  supabaseServiceRoleKey: config.supabaseServiceRoleKey,
+  supabaseTable: config.supabaseMemoryTable,
+  postgresUrl: config.supabaseDbUrl,
+  postgresTable: config.supabaseMemoryTable,
+  postgresSsl: config.postgresSsl,
+  updateEvery: config.memoryUpdateEvery,
+  recentExchangeLimit: config.memoryRecentExchanges,
+  maxMemoryChars: config.maxMemoryChars,
+});
 
 client.on("ready", () => {
   console.log(`Logged in as ${client.user.tag} (selfbot mode)`);
@@ -79,7 +105,8 @@ client.on("messageCreate", async (message) => {
 
   if (prompt.trim().toLowerCase() === "reset") {
     histories.delete(conversationKey);
-    await message.reply("Da xoa lich su chat cua cuoc tro chuyen nay.");
+    await memoryStore.reset(conversationKey);
+    await message.reply("Da xoa lich su chat va memory cua cuoc tro chuyen nay.");
     return;
   }
 
@@ -155,10 +182,14 @@ client.on("messageCreate", async (message) => {
       finalPrompt = `${finalPrompt}\n\nKet qua tim kiem tu web:\n${searchContext}\n\nHay tra loi dua tren ket qua tim kiem phia tren. Trich dan nguon neu can.`;
     }
 
+    const memoryContext = await memoryStore.getPrompt(conversationKey);
     const userMessage = buildUserMessage(finalPrompt, imageUrls);
     const nextHistory = [...history, { role: "user", content: userMessage }];
+    const requestHistory = memoryContext
+      ? [{ role: "system", content: memoryContext }, ...nextHistory]
+      : nextHistory;
 
-    const answer = await askAI(nextHistory);
+    const answer = await askAI(requestHistory);
     const cleanedAnswer = answer || "Minh chua tao duoc cau tra loi.";
 
     if (config.enableHistory) {
@@ -178,6 +209,8 @@ client.on("messageCreate", async (message) => {
     for (const chunk of splitDiscordMessage(cleanedAnswer)) {
       await message.reply(chunk);
     }
+
+    void updateMemory(conversationKey, prompt.trim(), cleanedAnswer);
   } catch (error) {
     console.error("AI request failed:", error);
     await message.reply("Minh khong goi duoc AI luc nay. Kiem tra API key, base URL hoac thu lai sau.");
@@ -923,7 +956,7 @@ function getConversationKey(message) {
   return `guild:${message.guild.id}:channel:${message.channel.id}:user:${message.author.id}`;
 }
 
-async function askAI(history) {
+async function callAI(messages, options = {}) {
   const response = await fetch(`${config.aiBaseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -932,9 +965,9 @@ async function askAI(history) {
     },
     body: JSON.stringify({
       model: config.aiModel,
-      messages: [{ role: "system", content: config.systemPrompt }, ...history],
-      temperature: config.temperature,
-      max_tokens: config.maxTokens,
+      messages,
+      temperature: options.temperature ?? config.temperature,
+      max_tokens: options.maxTokens ?? config.maxTokens,
     }),
   });
 
@@ -950,6 +983,34 @@ async function askAI(history) {
     data?.output_text?.trim() ||
     ""
   );
+}
+
+async function askAI(history) {
+  return callAI([{ role: "system", content: config.systemPrompt }, ...history]);
+}
+
+async function updateMemory(conversationKey, userPrompt, assistantAnswer) {
+  if (!config.enableMemory) return;
+
+  try {
+    await memoryStore.recordExchange(conversationKey, {
+      user: userPrompt,
+      assistant: assistantAnswer,
+    });
+
+    const updated = await memoryStore.summarizeIfNeeded(conversationKey, (messages) =>
+      callAI(messages, {
+        temperature: 0.2,
+        maxTokens: Math.min(config.maxTokens, 500),
+      }),
+    );
+
+    if (updated) {
+      console.log("[Memory] Updated conversation memory");
+    }
+  } catch (err) {
+    console.error("[Memory] Update failed:", err.message);
+  }
 }
 
 function startTyping(message) {

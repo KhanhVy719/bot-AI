@@ -54,9 +54,26 @@ function saveEnv(data) {
     `BOT_PREFIX=${data.BOT_PREFIX || "!"}`,
     `ENABLE_HISTORY=${data.ENABLE_HISTORY || "true"}`,
     `ENABLE_CHAT_LOGS=${data.ENABLE_CHAT_LOGS || "true"}`,
+    `REPLY_TO_BOT_REPLIES=${data.REPLY_TO_BOT_REPLIES || "true"}`,
+    `ENABLE_MEMORY=${data.ENABLE_MEMORY || "true"}`,
+    `MEMORY_BACKEND=${data.MEMORY_BACKEND || "file"}`,
+    `MEMORY_UPDATE_EVERY=${data.MEMORY_UPDATE_EVERY || "4"}`,
+    `MEMORY_RECENT_EXCHANGES=${data.MEMORY_RECENT_EXCHANGES || "8"}`,
+    `MAX_MEMORY_CHARS=${data.MAX_MEMORY_CHARS || "1600"}`,
+    `MEMORY_DIR=${data.MEMORY_DIR || "memory"}`,
+    `SUPABASE_URL=${data.SUPABASE_URL || ""}`,
+    `SUPABASE_SERVICE_ROLE_KEY=${data.SUPABASE_SERVICE_ROLE_KEY || ""}`,
+    `SUPABASE_DB_URL=${data.SUPABASE_DB_URL || ""}`,
+    `SUPABASE_MEMORY_TABLE=${data.SUPABASE_MEMORY_TABLE || "bot_memory"}`,
+    `POSTGRES_SSL=${data.POSTGRES_SSL || "true"}`,
     `MAX_HISTORY_MESSAGES=${data.MAX_HISTORY_MESSAGES || "12"}`,
     `AI_TEMPERATURE=${data.AI_TEMPERATURE || "0.7"}`,
     `AI_MAX_TOKENS=${data.AI_MAX_TOKENS || "1200"}`,
+    `MAX_EMBEDDED_IMAGES=${data.MAX_EMBEDDED_IMAGES || "24"}`,
+    `MAX_EMBEDDED_IMAGE_BYTES=${data.MAX_EMBEDDED_IMAGE_BYTES || "4194304"}`,
+    `MAX_EMBEDDED_IMAGE_TOTAL_BYTES=${data.MAX_EMBEDDED_IMAGE_TOTAL_BYTES || "10485760"}`,
+    `MAX_PDF_PAGES_FOR_VISION=${data.MAX_PDF_PAGES_FOR_VISION || "4"}`,
+    `PDF_SCREENSHOT_WIDTH=${data.PDF_SCREENSHOT_WIDTH || "1200"}`,
     `SYSTEM_PROMPT=${data.SYSTEM_PROMPT || ""}`,
     "",
   ];
@@ -102,9 +119,26 @@ export function createWebServer() {
       BOT_PREFIX: env.BOT_PREFIX || "!",
       ENABLE_HISTORY: env.ENABLE_HISTORY || "true",
       ENABLE_CHAT_LOGS: env.ENABLE_CHAT_LOGS || "true",
+      REPLY_TO_BOT_REPLIES: env.REPLY_TO_BOT_REPLIES || "true",
+      ENABLE_MEMORY: env.ENABLE_MEMORY || "true",
+      MEMORY_BACKEND: env.MEMORY_BACKEND || "file",
+      MEMORY_UPDATE_EVERY: env.MEMORY_UPDATE_EVERY || "4",
+      MEMORY_RECENT_EXCHANGES: env.MEMORY_RECENT_EXCHANGES || "8",
+      MAX_MEMORY_CHARS: env.MAX_MEMORY_CHARS || "1600",
+      MEMORY_DIR: env.MEMORY_DIR || "memory",
+      SUPABASE_URL: env.SUPABASE_URL || "",
+      SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY ? "***" + (env.SUPABASE_SERVICE_ROLE_KEY || "").slice(-8) : "",
+      SUPABASE_DB_URL: env.SUPABASE_DB_URL ? "***" + (env.SUPABASE_DB_URL || "").slice(-8) : "",
+      SUPABASE_MEMORY_TABLE: env.SUPABASE_MEMORY_TABLE || "bot_memory",
+      POSTGRES_SSL: env.POSTGRES_SSL || "true",
       MAX_HISTORY_MESSAGES: env.MAX_HISTORY_MESSAGES || "12",
       AI_TEMPERATURE: env.AI_TEMPERATURE || "0.7",
       AI_MAX_TOKENS: env.AI_MAX_TOKENS || "1200",
+      MAX_EMBEDDED_IMAGES: env.MAX_EMBEDDED_IMAGES || "24",
+      MAX_EMBEDDED_IMAGE_BYTES: env.MAX_EMBEDDED_IMAGE_BYTES || "4194304",
+      MAX_EMBEDDED_IMAGE_TOTAL_BYTES: env.MAX_EMBEDDED_IMAGE_TOTAL_BYTES || "10485760",
+      MAX_PDF_PAGES_FOR_VISION: env.MAX_PDF_PAGES_FOR_VISION || "4",
+      PDF_SCREENSHOT_WIDTH: env.PDF_SCREENSHOT_WIDTH || "1200",
       SYSTEM_PROMPT: env.SYSTEM_PROMPT || "",
     });
   });
@@ -318,6 +352,54 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
           <select id="cfg-ENABLE_CHAT_LOGS"><option value="true">Yes</option><option value="false">No</option></select>
         </div>
       </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Enable Memory</label>
+          <select id="cfg-ENABLE_MEMORY"><option value="true">Yes</option><option value="false">No</option></select>
+        </div>
+        <div class="form-group">
+          <label>Memory Backend</label>
+          <select id="cfg-MEMORY_BACKEND"><option value="postgres">Postgres</option><option value="file">File</option><option value="supabase">Supabase REST</option></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Memory Update Every</label>
+          <input type="number" id="cfg-MEMORY_UPDATE_EVERY" min="1" placeholder="4">
+        </div>
+        <div class="form-group">
+          <label>Memory Recent Exchanges</label>
+          <input type="number" id="cfg-MEMORY_RECENT_EXCHANGES" min="1" placeholder="8">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Max Memory Chars</label>
+          <input type="number" id="cfg-MAX_MEMORY_CHARS" min="200" placeholder="1600">
+        </div>
+        <div class="form-group">
+          <label>Supabase Memory Table</label>
+          <input type="text" id="cfg-SUPABASE_MEMORY_TABLE" placeholder="bot_memory">
+        </div>
+        <div class="form-group">
+          <label>Postgres SSL</label>
+          <select id="cfg-POSTGRES_SSL"><option value="true">Yes</option><option value="false">No</option></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Supabase URL</label>
+          <input type="text" id="cfg-SUPABASE_URL" placeholder="https://...supabase.co">
+        </div>
+        <div class="form-group">
+          <label>Supabase Service Role Key</label>
+          <input type="password" id="cfg-SUPABASE_SERVICE_ROLE_KEY" placeholder="eyJ...">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Supabase DB URL / Postgres URL</label>
+        <input type="password" id="cfg-SUPABASE_DB_URL" placeholder="postgresql://postgres:...@db.xxx.supabase.co:5432/postgres">
+      </div>
       <div class="form-group">
         <label>System Prompt</label>
         <textarea id="cfg-SYSTEM_PROMPT" rows="3" placeholder="Bot personality..."></textarea>
@@ -408,7 +490,9 @@ async function loadConfig() {
 
 async function saveConfig() {
   const fields = ['DISCORD_USER_TOKEN','AI_API_KEY','AI_BASE_URL','AI_MODEL','BOT_PREFIX',
-    'MAX_HISTORY_MESSAGES','AI_TEMPERATURE','AI_MAX_TOKENS','ENABLE_HISTORY','ENABLE_CHAT_LOGS','SYSTEM_PROMPT'];
+    'MAX_HISTORY_MESSAGES','AI_TEMPERATURE','AI_MAX_TOKENS','ENABLE_HISTORY','ENABLE_CHAT_LOGS',
+    'ENABLE_MEMORY','MEMORY_BACKEND','MEMORY_UPDATE_EVERY','MEMORY_RECENT_EXCHANGES','MAX_MEMORY_CHARS',
+    'SUPABASE_URL','SUPABASE_SERVICE_ROLE_KEY','SUPABASE_DB_URL','SUPABASE_MEMORY_TABLE','POSTGRES_SSL','SYSTEM_PROMPT'];
   const data = {};
   for (const f of fields) {
     const el = document.getElementById('cfg-' + f);
