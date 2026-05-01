@@ -6,6 +6,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createWebServer, addLog, setBotStatus, onRestart } from "./web.js";
 import mammoth from "mammoth";
+import JSZip from "jszip";
 import * as XLSX from "xlsx";
 import { PDFParse } from "pdf-parse";
 
@@ -121,7 +122,7 @@ client.on("messageCreate", async (message) => {
     let fileContext = "";
     let embeddedImageCount = 0;
     if (hasFiles) {
-      const fileContents = await downloadFiles(fileAttachments);
+      const fileContents = await downloadFiles(fileAttachments, prompt.trim());
       const embeddedImageUrls = fileContents.flatMap((file) => file.images || []);
       embeddedImageCount = embeddedImageUrls.length;
       if (embeddedImageUrls.length > 0) {
@@ -265,6 +266,24 @@ const IMAGE_FILE_EXTENSIONS = new Set([
 ]);
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB cho binary files
+const VISION_IMAGE_MIME_BY_EXTENSION = new Map([
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".gif", "image/gif"],
+  [".webp", "image/webp"],
+]);
+const MAX_EMBEDDED_IMAGES = readPositiveIntegerEnv("MAX_EMBEDDED_IMAGES", 24);
+const MAX_EMBEDDED_IMAGE_BYTES = readPositiveIntegerEnv(
+  "MAX_EMBEDDED_IMAGE_BYTES",
+  4 * 1024 * 1024,
+);
+const MAX_EMBEDDED_IMAGE_TOTAL_BYTES = readPositiveIntegerEnv(
+  "MAX_EMBEDDED_IMAGE_TOTAL_BYTES",
+  10 * 1024 * 1024,
+);
+const MAX_PDF_PAGES_FOR_VISION = readPositiveIntegerEnv("MAX_PDF_PAGES_FOR_VISION", 4);
+const PDF_SCREENSHOT_WIDTH = readPositiveIntegerEnv("PDF_SCREENSHOT_WIDTH", 1200);
 
 function extractFileAttachments(message) {
   const files = [];
@@ -320,23 +339,17 @@ function extractFileAttachments(message) {
 async function parseDocx(buffer) {
   try {
     const textResult = await mammoth.extractRawText({ buffer });
-    const images = [];
-
-    await mammoth.convertToHtml(
-      { buffer },
-      {
-        convertImage: mammoth.images.imgElement(async (image) => {
-          const base64 = await image.readAsBase64String();
-          const contentType = image.contentType || "image/png";
-          const src = `data:${contentType};base64,${base64}`;
-          images.push(src);
-          return { src };
-        }),
-      },
+    const imageExtraction = await extractDocxMediaImages(buffer);
+    const imageSummary = buildVisionImageSummary("File Word", imageExtraction);
+    const text = appendSection(
+      textResult.value || "[File Word khong co noi dung text]",
+      imageSummary,
     );
 
-    const text = textResult.value || "[File Word khong co noi dung text]";
-    return { text, images };
+    return {
+      text,
+      images: imageExtraction.images.map((image) => image.url),
+    };
   } catch (err) {
     console.error("[File] DOCX parse error:", err.message);
     return {
@@ -344,6 +357,33 @@ async function parseDocx(buffer) {
       images: [],
     };
   }
+}
+
+async function extractDocxMediaImages(buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  const candidates = [];
+  const skippedUnsupported = [];
+
+  for (const [path, entry] of Object.entries(zip.files)) {
+    if (entry.dir || !path.toLowerCase().startsWith("word/media/")) continue;
+
+    const ext = getExtension(path);
+    const mime = VISION_IMAGE_MIME_BY_EXTENSION.get(ext);
+    if (!mime) {
+      skippedUnsupported.push(path);
+      continue;
+    }
+
+    const data = await entry.async("nodebuffer");
+    candidates.push({
+      name: path,
+      mime,
+      bytes: data.length,
+      buffer: data,
+    });
+  }
+
+  return selectVisionImages(candidates, skippedUnsupported);
 }
 
 function parseExcel(buffer) {
@@ -364,31 +404,110 @@ function parseExcel(buffer) {
   }
 }
 
-async function parsePdf(buffer) {
+async function parsePdf(buffer, userPrompt = "") {
   let parser;
 
   try {
     parser = new PDFParse({ data: buffer });
     const textResult = await parser.getText();
-    const imageResult = await parser.getImage({
-      imageBuffer: false,
-      imageDataUrl: true,
-      imageThreshold: 50,
-    });
+    const pagesForVision = selectPdfPagesForVision(textResult, userPrompt);
+    const screenshotResult = pagesForVision.length
+      ? await parser.getScreenshot({
+          partial: pagesForVision,
+          desiredWidth: PDF_SCREENSHOT_WIDTH,
+          imageBuffer: false,
+          imageDataUrl: true,
+        })
+      : { pages: [] };
+    const screenshotImages = selectVisionImages(
+      (screenshotResult.pages || []).map((page) => ({
+        name: `PDF page ${page.pageNumber}`,
+        mime: "image/png",
+        bytes: estimateDataUrlBytes(page.dataUrl),
+        dataUrl: page.dataUrl,
+      })),
+    );
 
-    const text = textResult.text || "[File PDF khong co noi dung text]";
-    const images = (imageResult.pages || [])
-      .flatMap((page) => page.images || [])
-      .map((image) => image.dataUrl)
-      .filter(Boolean);
+    let embeddedImages = emptyImageExtraction();
+    try {
+      const imageResult = await parser.getImage({
+        partial: pagesForVision.length ? pagesForVision : undefined,
+        imageBuffer: false,
+        imageDataUrl: true,
+        imageThreshold: 50,
+      });
+      embeddedImages = selectVisionImages(
+        (imageResult.pages || []).flatMap((page) =>
+          (page.images || []).map((image) => ({
+            name: `PDF page ${page.pageNumber} image ${image.name}`,
+            mime: "image/png",
+            bytes: estimateDataUrlBytes(image.dataUrl),
+            dataUrl: image.dataUrl,
+          })),
+        ),
+      );
+    } catch (imageErr) {
+      console.error("[File] PDF embedded image extraction failed:", imageErr.message);
+    }
+
+    const images = dedupeImageUrls([
+      ...screenshotImages.images.map((image) => image.url),
+      ...embeddedImages.images.map((image) => image.url),
+    ]);
+    const renderedPages = (screenshotResult.pages || []).map((page) => page.pageNumber);
+    const summary = appendSection(
+      buildVisionImageSummary(
+        renderedPages.length
+          ? `File PDF screenshot trang ${renderedPages.join(", ")}`
+          : "File PDF screenshot",
+        screenshotImages,
+      ),
+      buildVisionImageSummary("File PDF anh nhung", embeddedImages),
+    );
+
+    const text = appendSection(
+      textResult.text || "[File PDF khong co noi dung text]",
+      summary,
+    );
 
     return { text, images };
   } catch (err) {
-    console.error("[File] PDF parse error:", err.message);
-    return {
-      text: `[Loi doc file PDF: ${err.message}]`,
-      images: [],
-    };
+    console.error("[File] PDF screenshot parse failed:", err.message);
+
+    try {
+      parser = parser || new PDFParse({ data: buffer });
+      const textResult = await parser.getText();
+      const imageResult = await parser.getImage({
+        imageBuffer: false,
+        imageDataUrl: true,
+        imageThreshold: 50,
+      });
+      const imageExtraction = selectVisionImages(
+        (imageResult.pages || []).flatMap((page) =>
+          (page.images || []).map((image) => ({
+            name: `PDF page ${page.pageNumber} image ${image.name}`,
+            mime: "image/png",
+            bytes: estimateDataUrlBytes(image.dataUrl),
+            dataUrl: image.dataUrl,
+          })),
+        ),
+      );
+      const text = appendSection(
+        textResult.text || "[File PDF khong co noi dung text]",
+        buildVisionImageSummary("File PDF anh nhung", imageExtraction),
+      );
+
+      return {
+        text,
+        images: imageExtraction.images.map((image) => image.url),
+      };
+    } catch (fallbackErr) {
+      console.error("[File] PDF parse error:", fallbackErr.message);
+      return {
+        text: `[Loi doc file PDF: ${fallbackErr.message}]`,
+        images: [],
+      };
+    }
   } finally {
     if (parser) {
       await parser.destroy().catch(() => {});
@@ -396,7 +515,172 @@ async function parsePdf(buffer) {
   }
 }
 
-async function downloadFiles(fileAttachments) {
+function selectPdfPagesForVision(textResult, userPrompt) {
+  const totalPages = textResult.total || textResult.pages?.length || 0;
+  if (!totalPages) return [];
+
+  const questionNumbers = extractQuestionNumbers(userPrompt);
+  const selected = new Set();
+
+  for (const questionNumber of questionNumbers) {
+    const questionPattern = new RegExp(`\\bcau\\s*0*${questionNumber}\\b`, "i");
+    const numberedPattern = new RegExp(`\\b0*${questionNumber}\\s*[\\).:-]`, "i");
+
+    for (const page of textResult.pages || []) {
+      const pageText = normalizeSearchText(page.text);
+      if (questionPattern.test(pageText) || numberedPattern.test(pageText)) {
+        selected.add(page.num);
+        if (page.num + 1 <= totalPages) selected.add(page.num + 1);
+      }
+    }
+  }
+
+  if (!selected.size) {
+    for (let page = 1; page <= Math.min(totalPages, MAX_PDF_PAGES_FOR_VISION); page += 1) {
+      selected.add(page);
+    }
+  }
+
+  return [...selected]
+    .filter((page) => page >= 1 && page <= totalPages)
+    .sort((a, b) => a - b)
+    .slice(0, MAX_PDF_PAGES_FOR_VISION);
+}
+
+function extractQuestionNumbers(text) {
+  const normalized = normalizeSearchText(text);
+  const numbers = new Set();
+  const patterns = [
+    /\b(?:cau|question|bai)\s*(?:so\s*)?[:#.-]?\s*(\d{1,3})\b/g,
+    /\bq\s*\.?\s*(\d{1,3})\b/g,
+  ];
+
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(normalized)) !== null) {
+      const value = Number(match[1]);
+      if (Number.isInteger(value) && value > 0) {
+        numbers.add(value);
+      }
+    }
+  }
+
+  return [...numbers];
+}
+
+function normalizeSearchText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\u0111/g, "d")
+    .replace(/\u0110/g, "d")
+    .toLowerCase();
+}
+
+function selectVisionImages(candidates = [], skippedUnsupported = []) {
+  const result = {
+    images: [],
+    skippedUnsupported: [...skippedUnsupported],
+    skippedTooLarge: [],
+    skippedBudget: [],
+  };
+  let totalBytes = 0;
+
+  for (const candidate of candidates) {
+    if (!candidate?.mime || (!candidate.dataUrl && !candidate.buffer)) {
+      result.skippedUnsupported.push(candidate?.name || "unknown");
+      continue;
+    }
+
+    const bytes = candidate.bytes || estimateDataUrlBytes(candidate.dataUrl);
+    if (bytes > MAX_EMBEDDED_IMAGE_BYTES) {
+      result.skippedTooLarge.push(candidate.name);
+      continue;
+    }
+
+    if (
+      result.images.length >= MAX_EMBEDDED_IMAGES ||
+      totalBytes + bytes > MAX_EMBEDDED_IMAGE_TOTAL_BYTES
+    ) {
+      result.skippedBudget.push(candidate.name);
+      continue;
+    }
+
+    const url =
+      candidate.dataUrl ||
+      `data:${candidate.mime};base64,${candidate.buffer.toString("base64")}`;
+    result.images.push({ name: candidate.name, url, bytes });
+    totalBytes += bytes;
+  }
+
+  return result;
+}
+
+function emptyImageExtraction() {
+  return {
+    images: [],
+    skippedUnsupported: [],
+    skippedTooLarge: [],
+    skippedBudget: [],
+  };
+}
+
+function buildVisionImageSummary(label, extraction) {
+  const parts = [];
+  if (extraction.images.length) {
+    parts.push(
+      `[${label}: da dua ${extraction.images.length} hinh anh vao vision input (${formatImageNames(extraction.images)}).]`,
+    );
+  }
+  if (extraction.skippedUnsupported.length) {
+    parts.push(
+      `[${label}: bo qua ${extraction.skippedUnsupported.length} hinh anh do dinh dang khong ho tro vision (${formatImageNames(extraction.skippedUnsupported)}).]`,
+    );
+  }
+  if (extraction.skippedTooLarge.length) {
+    parts.push(
+      `[${label}: bo qua ${extraction.skippedTooLarge.length} hinh anh vi vuot gioi han dung luong (${formatImageNames(extraction.skippedTooLarge)}).]`,
+    );
+  }
+  if (extraction.skippedBudget.length) {
+    parts.push(
+      `[${label}: bo qua ${extraction.skippedBudget.length} hinh anh vi vuot gioi han tong request (${formatImageNames(extraction.skippedBudget)}).]`,
+    );
+  }
+
+  return parts.join("\n");
+}
+
+function formatImageNames(imagesOrNames) {
+  const names = imagesOrNames.map((item) => item.name || item).filter(Boolean);
+  const shown = names.slice(0, 6).join(", ");
+  return names.length > 6 ? `${shown}, ...` : shown;
+}
+
+function appendSection(base, extra) {
+  if (!base) return extra || "";
+  if (!extra) return base;
+  return `${base}\n\n${extra}`;
+}
+
+function dedupeImageUrls(urls) {
+  return [...new Set(urls.filter(Boolean))];
+}
+
+function estimateDataUrlBytes(dataUrl) {
+  if (!dataUrl) return 0;
+  const commaIndex = dataUrl.indexOf(",");
+  const base64Length = commaIndex === -1 ? dataUrl.length : dataUrl.length - commaIndex - 1;
+  return Math.ceil((base64Length * 3) / 4);
+}
+
+function getExtension(path) {
+  const normalized = String(path || "").toLowerCase();
+  const dotIndex = normalized.lastIndexOf(".");
+  return dotIndex === -1 ? "" : normalized.slice(dotIndex);
+}
+
+async function downloadFiles(fileAttachments, userPrompt = "") {
   const results = [];
 
   for (const file of fileAttachments) {
@@ -455,7 +739,7 @@ async function downloadFiles(fileAttachments) {
         } else if (file.ext === ".xlsx" || file.ext === ".xls") {
           text = parseExcel(buffer);
         } else if (file.ext === ".pdf") {
-          const parsedPdf = await parsePdf(buffer);
+          const parsedPdf = await parsePdf(buffer, userPrompt);
           embeddedImages = parsedPdf.images || [];
           text = embeddedImages.length > 0
             ? `${parsedPdf.text}\n\n[File PDF co ${embeddedImages.length} hinh anh nhung da duoc dua vao vision input de phan tich]`
@@ -708,6 +992,11 @@ function parseBoolean(value, fallback) {
   }
 
   return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
+}
+
+function readPositiveIntegerEnv(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
 function saveChatLog(message, userPrompt, aiResponse, searchContext) {

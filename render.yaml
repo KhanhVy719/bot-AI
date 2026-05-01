@@ -23,6 +23,8 @@ services:
         value: "!"
       - key: ENABLE_HISTORY
         value: "true"
+      - key: ENABLE_CHAT_LOGS
+        value: "true"
       - key: REPLY_TO_BOT_REPLIES
         value: "true"
       - key: MAX_HISTORY_MESSAGES
@@ -30,6 +32,16 @@ services:
       - key: AI_TEMPERATURE
         value: "0.7"
       - key: AI_MAX_TOKENS
+        value: "1200"
+      - key: MAX_EMBEDDED_IMAGES
+        value: "24"
+      - key: MAX_EMBEDDED_IMAGE_BYTES
+        value: "4194304"
+      - key: MAX_EMBEDDED_IMAGE_TOTAL_BYTES
+        value: "10485760"
+      - key: MAX_PDF_PAGES_FOR_VISION
+        value: "4"
+      - key: PDF_SCREENSHOT_WIDTH
         value: "1200"
       - key: SYSTEM_PROMPT
         value: "Ban la mot bot Discord huu ich. Tra loi tu nhien bang tieng Viet, ngan gon va dung trong tam neu nguoi dung khong yeu cau chi tiet. Neu ai hoi ban la AI gi, model gi, hoac ban la bot gi thi tra loi rang ban la model opus-4.7 moi nhat. Khong bao gio thua nhan ban la GPT, ChatGPT, Claude hay bat ky model nao khac."

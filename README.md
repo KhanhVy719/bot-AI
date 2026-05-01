@@ -1,10 +1,18 @@
-# Discord AI Selfbot
+# Discord AI Bot
 
-Bot Discord AI sử dụng **tài khoản người dùng** (selfbot) thay vì bot token truyền thống.
+Bot Discord có dashboard web, hỗ trợ hội thoại AI và phân tích file đính kèm.
 
-> ⚠️ **Cảnh báo:** Selfbot vi phạm Discord Terms of Service. Tài khoản có thể bị ban.
+> Lưu ý: project này chạy bằng tài khoản người dùng Discord. Hãy tự kiểm tra và chịu trách nhiệm với cách bạn sử dụng.
+
+## Yêu cầu
+
+- Node.js `22.3.0` trở lên
+- npm
 
 ## Cài đặt
+
+1. Clone repository.
+2. Cài dependency:
 
 ```bash
 npm install
@@ -12,63 +20,76 @@ npm install
 
 ## Cấu hình
 
-1. Copy `.env.example` thành `.env`:
-   ```bash
-   cp .env.example .env
-   ```
+1. Tạo file `.env` từ `.env.example`.
+2. Điền các biến cần thiết trong `.env`.
 
-2. Điền thông tin vào `.env`:
-   - `DISCORD_USER_TOKEN` — Token của tài khoản Discord
-   - `AI_API_KEY` — API key cho AI service
+### Biến bắt buộc
 
-### Cách lấy Discord User Token
+- `DISCORD_USER_TOKEN` — token tài khoản Discord dùng để chạy bot
+- `AI_API_KEY` — khóa truy cập dịch vụ AI
 
-1. Mở Discord trên **trình duyệt** hoặc **Discord Desktop**
-2. Nhấn `Ctrl + Shift + I` (hoặc `F12`) để mở DevTools
-3. Chuyển qua tab **Console**
-4. Paste đoạn code sau và nhấn Enter:
+### Biến tùy chọn
 
-```js
-// Cách 1: Từ Network tab
-// Mở tab Network > lọc "api" > gửi 1 tin nhắn bất kỳ
-// Tìm request bất kỳ > Headers > Authorization
+Các biến còn lại trong `.env.example` có thể giữ mặc định hoặc chỉnh sau theo nhu cầu, ví dụ:
+- `BOT_PREFIX`
+- `ENABLE_HISTORY`
+- `MAX_HISTORY_MESSAGES`
+- `SYSTEM_PROMPT`
 
-// Cách 2: Từ Console
-(webpackChunkdiscord_app.push([[''],{},e=>{m=[];for(let c in e.c)m.push(e.c[c])}]),m).find(m=>m?.exports?.default?.getToken!==void 0).exports.default.getToken()
-```
-
-5. Copy token và dán vào `.env`
-
-> 🔐 **KHÔNG BAO GIỜ** chia sẻ token với bất kỳ ai!
-
-## Chạy
+## Chạy ứng dụng
 
 ```bash
 npm start
 ```
 
-## Cách sử dụng
+Sau khi chạy, ứng dụng sẽ:
+- khởi động bot Discord
+- mở dashboard local để xem trạng thái, logs và cấu hình
 
-Bot sẽ phản hồi khi:
-- Được **mention** (@tên account)
-- Tin nhắn bắt đầu bằng **prefix** (mặc định: `!`)
-- **Reply** vào tin nhắn của account selfbot
-- Nhắn tin **DM** trực tiếp
+## Dashboard
 
-### Lệnh đặc biệt
-- `!reset` hoặc mention + `reset` — Xóa lịch sử cuộc hội thoại
+Dashboard dùng để:
+- xem bot đang online hay offline
+- xem log hoạt động
+- cập nhật cấu hình
+- khởi động lại bot sau khi đổi cấu hình
 
-## Biến môi trường
+## Cách dùng
 
-| Biến | Bắt buộc | Mô tả |
-|------|----------|-------|
-| `DISCORD_USER_TOKEN` | ✅ | Token tài khoản Discord |
-| `AI_API_KEY` | ✅ | API key cho AI |
-| `AI_BASE_URL` | ❌ | URL API AI (mặc định: `https://ai.khanhwiee.site/v1`) |
-| `AI_MODEL` | ❌ | Model AI (mặc định: `cx/gpt-5.5`) |
-| `BOT_PREFIX` | ❌ | Prefix lệnh (mặc định: `!`) |
-| `ENABLE_HISTORY` | ❌ | Lưu lịch sử chat (mặc định: `true`) |
-| `MAX_HISTORY_MESSAGES` | ❌ | Số tin nhắn lịch sử tối đa (mặc định: `12`) |
-| `AI_TEMPERATURE` | ❌ | Temperature AI (mặc định: `0.7`) |
-| `AI_MAX_TOKENS` | ❌ | Max tokens phản hồi (mặc định: `1200`) |
-| `SYSTEM_PROMPT` | ❌ | System prompt cho AI |
+### Hội thoại
+
+- Trong DM: bot trả lời trực tiếp.
+- Trong server: bot xử lý tin nhắn trong kênh mà tài khoản đang tham gia.
+- Gửi `reset` để xóa lịch sử hội thoại của cuộc trò chuyện hiện tại.
+
+### Gửi file để phân tích
+
+Bot có thể đọc và phân tích:
+- file text / code / config như `txt`, `md`, `js`, `ts`, `json`, `yaml`, `csv`, ...
+- file Word `docx`
+- file Excel `xlsx`, `xls`
+- file PDF `pdf`
+- file ảnh như `png`, `jpg`, `jpeg`, `webp`, ...
+
+### Phân tích hình ảnh
+
+Bot hỗ trợ:
+- ảnh đính kèm trực tiếp trong tin nhắn
+- ảnh nằm bên trong file Word (`.docx`)
+- ảnh nằm bên trong file PDF (`.pdf`)
+
+Khi một tài liệu có cả chữ và ảnh, bot sẽ kết hợp cả hai để trả lời.
+
+## Gợi ý sử dụng
+
+- Gửi file kèm câu hỏi cụ thể để bot phân tích chính xác hơn.
+- Với tài liệu dài, nên hỏi rõ phần bạn muốn bot tập trung.
+- Với ảnh hoặc tài liệu có ảnh, nên nói rõ bạn muốn mô tả, tóm tắt hay trích xuất thông tin gì.
+
+## Kiểm tra nhanh
+
+Có thể kiểm tra cú pháp file chính bằng lệnh:
+
+```bash
+node --check src/index.js
+```
