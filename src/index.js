@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createWebServer, addLog, setBotStatus, onRestart } from "./web.js";
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
-import pdf from "pdf-parse/lib/pdf-parse.js";
+import { PDFParse } from "pdf-parse";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -327,8 +327,10 @@ function parseExcel(buffer) {
 
 async function parsePdf(buffer) {
   try {
-    const data = await pdf(buffer);
-    return data.text || "[File PDF khong co noi dung text]";
+    const parser = new PDFParse({});
+    await parser.load(buffer);
+    const text = await parser.getText();
+    return text || "[File PDF khong co noi dung text]";
   } catch (err) {
     console.error("[File] PDF parse error:", err.message);
     return `[Loi doc file PDF: ${err.message}]`;
