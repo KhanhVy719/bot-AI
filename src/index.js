@@ -69,7 +69,7 @@ client.on("messageCreate", async (message) => {
   const prompt = await getUserPrompt(message);
   if (prompt === null) return;
 
-  const imageUrls = extractImageUrls(message);
+  let imageUrls = extractImageUrls(message);
   const hasImages = imageUrls.length > 0;
   const fileAttachments = extractFileAttachments(message);
   const hasFiles = fileAttachments.length > 0;
@@ -119,8 +119,15 @@ client.on("messageCreate", async (message) => {
 
     // Download và đọc nội dung file đính kèm
     let fileContext = "";
+    let embeddedImageCount = 0;
     if (hasFiles) {
       const fileContents = await downloadFiles(fileAttachments);
+      const embeddedImageUrls = fileContents.flatMap((file) => file.images || []);
+      embeddedImageCount = embeddedImageUrls.length;
+      if (embeddedImageUrls.length > 0) {
+        imageUrls = [...imageUrls, ...embeddedImageUrls];
+        console.log(`[File] Added ${embeddedImageUrls.length} embedded image(s) from documents to vision input`);
+      }
       if (fileContents.length > 0) {
         fileContext = fileContents
           .map((f) => `--- File: ${f.name} (${f.type}) ---\n${f.content}`)
@@ -135,7 +142,12 @@ client.on("messageCreate", async (message) => {
     // Inject file content vào prompt
     if (fileContext) {
       const userQuestion = finalPrompt || "Hay phan tich va giai thich noi dung file nay.";
-      finalPrompt = `Nguoi dung gui ${fileAttachments.length} file dinh kem va hoi: "${userQuestion}"\n\nNoi dung cac file:\n${fileContext}\n\nHay phan tich, giai thich, hoac tra loi dua tren noi dung file phia tren.`;
+      const attachmentImageCount = fileAttachments.filter((file) => file.isImage).length;
+      const totalImageCount = attachmentImageCount + embeddedImageCount;
+      const attachmentLabel = totalImageCount
+        ? `${fileAttachments.length} file dinh kem, trong do co ${totalImageCount} hinh anh (gom ca anh nam trong file)`
+        : `${fileAttachments.length} file dinh kem`;
+      finalPrompt = `Nguoi dung gui ${attachmentLabel} va hoi: "${userQuestion}"\n\nNoi dung file va thong tin dinh kem:\n${fileContext}\n\nHay phan tich, giai thich, hoac tra loi dua tren noi dung va thong tin dinh kem phia tren. Neu co hinh anh thi hay ket hop ca nhung gi ban nhin thay trong anh de tra loi.`;
     }
 
     if (searchContext) {
@@ -248,6 +260,10 @@ const BINARY_DOC_EXTENSIONS = new Set([
   ".pdf",            // PDF
 ]);
 
+const IMAGE_FILE_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".heic", ".heif",
+]);
+
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB cho binary files
 
 function extractFileAttachments(message) {
@@ -257,8 +273,9 @@ function extractFileAttachments(message) {
     const name = (attachment.name || "").toLowerCase();
     const ext = name.includes(".") ? "." + name.split(".").pop() : "";
 
-    // Bỏ qua file ảnh (đã xử lý riêng)
-    if (attachment.contentType?.startsWith("image/")) continue;
+    const isImage =
+      attachment.contentType?.startsWith("image/") ||
+      IMAGE_FILE_EXTENSIONS.has(ext);
 
     // Check xem là file binary document (Word, Excel, PDF)
     const isBinaryDoc = BINARY_DOC_EXTENSIONS.has(ext) ||
@@ -280,13 +297,16 @@ function extractFileAttachments(message) {
       name === "dockerfile" ||
       name === "makefile";
 
-    if (isBinaryDoc || isText) {
+    if (isImage || isBinaryDoc || isText) {
       files.push({
         name: attachment.name || "unknown",
         url: attachment.url,
         size: attachment.size || 0,
-        contentType: attachment.contentType || "text/plain",
+        contentType: attachment.contentType || (isImage ? "image/*" : "text/plain"),
         isBinary: !!isBinaryDoc,
+        isImage: !!isImage,
+        width: attachment.width || null,
+        height: attachment.height || null,
         ext,
       });
     }
@@ -299,11 +319,30 @@ function extractFileAttachments(message) {
 
 async function parseDocx(buffer) {
   try {
-    const result = await mammoth.extractRawText({ buffer });
-    return result.value || "[File Word khong co noi dung text]";
+    const textResult = await mammoth.extractRawText({ buffer });
+    const images = [];
+
+    await mammoth.convertToHtml(
+      { buffer },
+      {
+        convertImage: mammoth.images.imgElement(async (image) => {
+          const base64 = await image.readAsBase64String();
+          const contentType = image.contentType || "image/png";
+          const src = `data:${contentType};base64,${base64}`;
+          images.push(src);
+          return { src };
+        }),
+      },
+    );
+
+    const text = textResult.value || "[File Word khong co noi dung text]";
+    return { text, images };
   } catch (err) {
     console.error("[File] DOCX parse error:", err.message);
-    return `[Loi doc file Word: ${err.message}]`;
+    return {
+      text: `[Loi doc file Word: ${err.message}]`,
+      images: [],
+    };
   }
 }
 
@@ -326,14 +365,34 @@ function parseExcel(buffer) {
 }
 
 async function parsePdf(buffer) {
+  let parser;
+
   try {
-    const parser = new PDFParse({});
-    await parser.load(buffer);
-    const text = await parser.getText();
-    return text || "[File PDF khong co noi dung text]";
+    parser = new PDFParse({ data: buffer });
+    const textResult = await parser.getText();
+    const imageResult = await parser.getImage({
+      imageBuffer: false,
+      imageDataUrl: true,
+      imageThreshold: 50,
+    });
+
+    const text = textResult.text || "[File PDF khong co noi dung text]";
+    const images = (imageResult.pages || [])
+      .flatMap((page) => page.images || [])
+      .map((image) => image.dataUrl)
+      .filter(Boolean);
+
+    return { text, images };
   } catch (err) {
     console.error("[File] PDF parse error:", err.message);
-    return `[Loi doc file PDF: ${err.message}]`;
+    return {
+      text: `[Loi doc file PDF: ${err.message}]`,
+      images: [],
+    };
+  } finally {
+    if (parser) {
+      await parser.destroy().catch(() => {});
+    }
   }
 }
 
@@ -342,6 +401,19 @@ async function downloadFiles(fileAttachments) {
 
   for (const file of fileAttachments) {
     try {
+      if (file.isImage) {
+        const sizeInMb = (file.size / 1024 / 1024).toFixed(2);
+        const dimensions = file.width && file.height ? `${file.width}x${file.height}` : "khong ro kich thuoc";
+        const summary = `[Hinh anh dinh kem: ${file.name}, loai ${file.contentType}, dung luong ${sizeInMb}MB, kich thuoc ${dimensions}. Anh nay se duoc phan tich truc tiep tu vision input.]`;
+        console.log(`[File] Registered image attachment ${file.name}: ${dimensions}, ${sizeInMb}MB`);
+        results.push({
+          name: file.name,
+          type: file.contentType,
+          content: summary,
+        });
+        continue;
+      }
+
       // Check size limit
       if (file.size > MAX_FILE_SIZE) {
         results.push({
@@ -365,6 +437,8 @@ async function downloadFiles(fileAttachments) {
 
       let text;
 
+      let embeddedImages = [];
+
       if (file.isBinary) {
         // Download as buffer cho file binary
         const arrayBuffer = await response.arrayBuffer();
@@ -373,11 +447,19 @@ async function downloadFiles(fileAttachments) {
 
         // Parse theo loại file
         if (file.ext === ".docx" || file.ext === ".doc") {
-          text = await parseDocx(buffer);
+          const parsedDocx = await parseDocx(buffer);
+          embeddedImages = parsedDocx.images || [];
+          text = embeddedImages.length > 0
+            ? `${parsedDocx.text}\n\n[File Word co ${embeddedImages.length} hinh anh nhung da duoc dua vao vision input de phan tich]`
+            : parsedDocx.text;
         } else if (file.ext === ".xlsx" || file.ext === ".xls") {
           text = parseExcel(buffer);
         } else if (file.ext === ".pdf") {
-          text = await parsePdf(buffer);
+          const parsedPdf = await parsePdf(buffer);
+          embeddedImages = parsedPdf.images || [];
+          text = embeddedImages.length > 0
+            ? `${parsedPdf.text}\n\n[File PDF co ${embeddedImages.length} hinh anh nhung da duoc dua vao vision input de phan tich]`
+            : parsedPdf.text;
         } else {
           text = `[Dinh dang file ${file.ext} chua duoc ho tro]`;
         }
@@ -396,6 +478,7 @@ async function downloadFiles(fileAttachments) {
         name: file.name,
         type: file.contentType,
         content: text,
+        images: embeddedImages,
       });
     } catch (err) {
       console.error(`[File] Error processing ${file.name}:`, err.message);
